@@ -1,166 +1,61 @@
-from typing import Any, Dict, List
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
+from pathlib import Path
+from typing import Any
+
+import fitz
 
 
-def get_research_topic(messages: List[AnyMessage]) -> str:
-    """
-    Get the research topic from the messages.
-    """
-    # check if request has a history and combine the messages into a single string
-    if len(messages) == 1:
-        research_topic = messages[-1].content
-    else:
-        research_topic = ""
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                research_topic += f"User: {message.content}\n"
-            elif isinstance(message, AIMessage):
-                research_topic += f"Assistant: {message.content}\n"
-    return research_topic
+def parse_pdf(pdf_path: str) -> list[dict[str, Any]]:
+    document = fitz.open(pdf_path)
+    chunks: list[dict[str, Any]] = []
+    for page_number, page in enumerate(document, start=1):
+        text = page.get_text("text").strip()
+        if text:
+            chunks.append({"page": page_number, "text": text, "section_title": f"Page {page_number}"})
+    document.close()
+    return chunks
 
 
-def resolve_urls(urls_to_resolve: List[Any], id: int) -> Dict[str, str]:
-    """
-    Create a map of the vertex ai search urls (very long) to a short url with a unique id for each url.
-    Ensures each original URL gets a consistent shortened form while maintaining uniqueness.
-    """
-    prefix = f"https://vertexaisearch.cloud.google.com/id/"
-    urls = [site.web.uri for site in urls_to_resolve]
-
-    # Create a dictionary that maps each unique URL to its first occurrence index
-    resolved_map = {}
-    for idx, url in enumerate(urls):
-        if url not in resolved_map:
-            resolved_map[url] = f"{prefix}{id}-{idx}"
-
-    return resolved_map
+def split_into_sections(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    for chunk in chunks:
+        sections.append(
+            {
+                "title": chunk["section_title"],
+                "page_range": f"p.{chunk['page']}",
+                "text": chunk["text"],
+            }
+        )
+    return sections
 
 
-def insert_citation_markers(text, citations_list):
-    """
-    Inserts citation markers into a text string based on start and end indices.
+def save_summary(paper_id: str, summary_md: str, notes_dir: str):
+    paper_dir = Path(notes_dir) / paper_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    (paper_dir / "summary.md").write_text(summary_md, encoding="utf-8")
 
-    Args:
-        text (str): The original text string.
-        citations_list (list): A list of dictionaries, where each dictionary
-                               contains 'start_index', 'end_index', and
-                               'segment_string' (the marker to insert).
-                               Indices are assumed to be for the original text.
 
-    Returns:
-        str: The text with citation markers inserted.
-    """
-    # Sort citations by end_index in descending order.
-    # If end_index is the same, secondary sort by start_index descending.
-    # This ensures that insertions at the end of the string don't affect
-    # the indices of earlier parts of the string that still need to be processed.
-    sorted_citations = sorted(
-        citations_list, key=lambda c: (c["end_index"], c["start_index"]), reverse=True
+def append_note(paper_id: str, qa_pair: dict, notes_dir: str):
+    paper_dir = Path(notes_dir) / paper_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    note_path = paper_dir / "notes.md"
+    note = (
+        f"## Q: {qa_pair['question']}\n\n"
+        f"**A:** {qa_pair['answer']}\n\n"
+        f"**引用：** {', '.join(qa_pair.get('citations', []))}\n\n---\n"
     )
-
-    modified_text = text
-    for citation_info in sorted_citations:
-        # These indices refer to positions in the *original* text,
-        # but since we iterate from the end, they remain valid for insertion
-        # relative to the parts of the string already processed.
-        end_idx = citation_info["end_index"]
-        marker_to_insert = ""
-        for segment in citation_info["segments"]:
-            marker_to_insert += f" [{segment['label']}]({segment['short_url']})"
-        # Insert the citation marker at the original end_idx position
-        modified_text = (
-            modified_text[:end_idx] + marker_to_insert + modified_text[end_idx:]
-        )
-
-    return modified_text
+    existing = note_path.read_text(encoding="utf-8") if note_path.exists() else ""
+    note_path.write_text(existing + note, encoding="utf-8")
 
 
-def get_citations(response, resolved_urls_map):
-    """
-    Extracts and formats citation information from a Gemini model's response.
-
-    This function processes the grounding metadata provided in the response to
-    construct a list of citation objects. Each citation object includes the
-    start and end indices of the text segment it refers to, and a string
-    containing formatted markdown links to the supporting web chunks.
-
-    Args:
-        response: The response object from the Gemini model, expected to have
-                  a structure including `candidates[0].grounding_metadata`.
-                  It also relies on a `resolved_map` being available in its
-                  scope to map chunk URIs to resolved URLs.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary represents a citation
-              and has the following keys:
-              - "start_index" (int): The starting character index of the cited
-                                     segment in the original text. Defaults to 0
-                                     if not specified.
-              - "end_index" (int): The character index immediately after the
-                                   end of the cited segment (exclusive).
-              - "segments" (list[str]): A list of individual markdown-formatted
-                                        links for each grounding chunk.
-              - "segment_string" (str): A concatenated string of all markdown-
-                                        formatted links for the citation.
-              Returns an empty list if no valid candidates or grounding supports
-              are found, or if essential data is missing.
-    """
-    citations = []
-
-    # Ensure response and necessary nested structures are present
-    if not response or not response.candidates:
-        return citations
-
-    candidate = response.candidates[0]
-    if (
-        not hasattr(candidate, "grounding_metadata")
-        or not candidate.grounding_metadata
-        or not hasattr(candidate.grounding_metadata, "grounding_supports")
-    ):
-        return citations
-
-    for support in candidate.grounding_metadata.grounding_supports:
-        citation = {}
-
-        # Ensure segment information is present
-        if not hasattr(support, "segment") or support.segment is None:
-            continue  # Skip this support if segment info is missing
-
-        start_index = (
-            support.segment.start_index
-            if support.segment.start_index is not None
-            else 0
-        )
-
-        # Ensure end_index is present to form a valid segment
-        if support.segment.end_index is None:
-            continue  # Skip if end_index is missing, as it's crucial
-
-        # Add 1 to end_index to make it an exclusive end for slicing/range purposes
-        # (assuming the API provides an inclusive end_index)
-        citation["start_index"] = start_index
-        citation["end_index"] = support.segment.end_index
-
-        citation["segments"] = []
-        if (
-            hasattr(support, "grounding_chunk_indices")
-            and support.grounding_chunk_indices
-        ):
-            for ind in support.grounding_chunk_indices:
-                try:
-                    chunk = candidate.grounding_metadata.grounding_chunks[ind]
-                    resolved_url = resolved_urls_map.get(chunk.web.uri, None)
-                    citation["segments"].append(
-                        {
-                            "label": chunk.web.title.split(".")[:-1][0],
-                            "short_url": resolved_url,
-                            "value": chunk.web.uri,
-                        }
-                    )
-                except (IndexError, AttributeError, NameError):
-                    # Handle cases where chunk, web, uri, or resolved_map might be problematic
-                    # For simplicity, we'll just skip adding this particular segment link
-                    # In a production system, you might want to log this.
-                    pass
-        citations.append(citation)
-    return citations
+def get_relevant_chunks(pdf_chunks: list, question: str, top_k: int = 5) -> str:
+    question_terms = {term.lower() for term in question.split() if term.strip()}
+    scored_chunks: list[tuple[int, dict[str, Any]]] = []
+    for chunk in pdf_chunks:
+        text = chunk.get("text", "")
+        score = sum(1 for term in question_terms if term in text.lower())
+        scored_chunks.append((score, chunk))
+    scored_chunks.sort(key=lambda item: item[0], reverse=True)
+    selected = [chunk for score, chunk in scored_chunks[:top_k] if score > 0]
+    if not selected:
+        selected = pdf_chunks[:top_k]
+    return "\n\n".join(f"[p.{chunk['page']}] {chunk['text']}" for chunk in selected)

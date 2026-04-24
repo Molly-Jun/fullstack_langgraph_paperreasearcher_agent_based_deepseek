@@ -11,16 +11,14 @@ import { Badge } from "@/components/ui/badge";
 import {
   ActivityTimeline,
   ProcessedEvent,
-} from "@/components/ActivityTimeline"; // Assuming ActivityTimeline is in the same dir or adjust path
+} from "@/components/ActivityTimeline";
 
-// Markdown component props type from former ReportView
 type MdComponentProps = {
   className?: string;
   children?: ReactNode;
   [key: string]: any;
 };
 
-// Markdown components (from former ReportView.tsx)
 const mdComponents = {
   h1: ({ className, children, ...props }: MdComponentProps) => (
     <h1 className={cn("text-2xl font-bold mt-4 mb-2", className)} {...props}>
@@ -134,13 +132,11 @@ const mdComponents = {
   ),
 };
 
-// Props for HumanMessageBubble
 interface HumanMessageBubbleProps {
   message: Message;
   mdComponents: typeof mdComponents;
 }
 
-// HumanMessageBubble Component
 const HumanMessageBubble: React.FC<HumanMessageBubbleProps> = ({
   message,
   mdComponents,
@@ -158,7 +154,6 @@ const HumanMessageBubble: React.FC<HumanMessageBubbleProps> = ({
   );
 };
 
-// Props for AiMessageBubble
 interface AiMessageBubbleProps {
   message: Message;
   historicalActivity: ProcessedEvent[] | undefined;
@@ -170,7 +165,6 @@ interface AiMessageBubbleProps {
   copiedMessageId: string | null;
 }
 
-// AiMessageBubble Component
 const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   message,
   historicalActivity,
@@ -181,7 +175,6 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   handleCopy,
   copiedMessageId,
 }) => {
-  // Determine which activity events to show and if it's for a live loading message
   const activityForThisBubble =
     isLastMessage && isOverallLoading ? liveActivity : historicalActivity;
   const isLiveActivityForThisBubble = isLastMessage && isOverallLoading;
@@ -226,8 +219,15 @@ interface ChatMessagesViewProps {
   messages: Message[];
   isLoading: boolean;
   scrollAreaRef: React.RefObject<HTMLDivElement | null>;
-  onSubmit: (inputValue: string, effort: string, model: string) => void;
+  onSubmit: (
+    inputValue: string,
+    summaryPrompts: string,
+    effort: string,
+    model: string,
+    mode: "summary" | "qa"
+  ) => void;
   onCancel: () => void;
+  onUploadPdf: (file: File) => void;
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
 }
@@ -240,6 +240,7 @@ export function ChatMessagesView({
   onCancel,
   liveActivityEvents,
   historicalActivities,
+  onUploadPdf,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -247,15 +248,16 @@ export function ChatMessagesView({
     try {
       await navigator.clipboard.writeText(text);
       setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 2000); // Reset after 2 seconds
+      setTimeout(() => setCopiedMessageId(null), 2000);
     } catch (err) {
       console.error("Failed to copy text: ", err);
     }
   };
+
   return (
-    <div className="flex flex-col h-full">
-      <ScrollArea className="flex-1 overflow-y-auto" ref={scrollAreaRef}>
-        <div className="p-4 md:p-6 space-y-2 max-w-4xl mx-auto pt-16">
+    <div className="flex flex-col h-full overflow-hidden">
+      <ScrollArea className="flex-1 min-h-0" ref={scrollAreaRef}>
+        <div className="p-4 md:p-6 space-y-2 max-w-4xl mx-auto pt-4">
           {messages.map((message, index) => {
             const isLast = index === messages.length - 1;
             return (
@@ -274,9 +276,9 @@ export function ChatMessagesView({
                     <AiMessageBubble
                       message={message}
                       historicalActivity={historicalActivities[message.id!]}
-                      liveActivity={liveActivityEvents} // Pass global live events
+                      liveActivity={liveActivityEvents}
                       isLastMessage={isLast}
-                      isOverallLoading={isLoading} // Pass global loading state
+                      isOverallLoading={isLoading}
                       mdComponents={mdComponents}
                       handleCopy={handleCopy}
                       copiedMessageId={copiedMessageId}
@@ -290,8 +292,6 @@ export function ChatMessagesView({
             (messages.length === 0 ||
               messages[messages.length - 1].type === "human") && (
               <div className="flex items-start gap-3 mt-3">
-                {" "}
-                {/* AI message row structure */}
                 <div className="relative group max-w-[85%] md:max-w-[80%] rounded-xl p-3 shadow-sm break-words bg-neutral-800 text-neutral-100 rounded-bl-none w-full min-h-[56px]">
                   {liveActivityEvents.length > 0 ? (
                     <div className="text-xs">
@@ -316,6 +316,7 @@ export function ChatMessagesView({
         isLoading={isLoading}
         onCancel={onCancel}
         hasHistory={messages.length > 0}
+        onUploadPdf={onUploadPdf}
       />
     </div>
   );
