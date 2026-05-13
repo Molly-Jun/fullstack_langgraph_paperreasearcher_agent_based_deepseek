@@ -51,13 +51,16 @@ def load_and_chunk(state: ParseState, config: RunnableConfig):
         "section_summaries": [],
         "final_summary": "",
         "summary_prompts": state.get("summary_prompts", "请生成结构清晰、带页码引用的标准摘要。"),
-        "notes_dir": configurable.notes_dir,
+        "summary_dir": configurable.summary_dir,
+        "note_dir": configurable.note_dir,
         "sections": sections,
         "user_question": state.get("user_question", ""),
     }
 
 
 def continue_to_sections(state: OverallState):
+    # 为每一个章节生成一个 Send 对象，把局部状态（包含 section_text 等）发送给 summarize_section 节点
+    # 触发并行处理，写明节点以及对应传递的信息
     return [
         Send(
             "summarize_section",
@@ -91,7 +94,9 @@ def summarize_section(state: SectionState, config: RunnableConfig):
     prompt = f"{state.get('summary_prompts', summary_prompts['summary'])}\n\n{prompt}"
     structured_llm = llm.with_structured_output(SectionSummary, method="function_calling")
     result = structured_llm.invoke(prompt)
+    # 让llm生成结构化输出以便agent使用
     return {
+        # 结果会被 LangGraph 自动累加到 state["section_summaries"] 列表中
         "section_summaries": [
             {
                 "section_title": result.section_title,
@@ -162,7 +167,7 @@ def finalize_summary(state: OverallState, config: RunnableConfig):
     )
     result = llm.invoke(prompt)
     summary_text = result.content if hasattr(result, "content") else str(result)
-    save_summary(state["paper_id"], summary_text, configurable.notes_dir)
+    save_summary(state["paper_id"], summary_text, configurable.summary_dir)
     return {"final_summary": summary_text, "messages": [AIMessage(content=summary_text)]}
 
 
@@ -202,7 +207,7 @@ def save_note_node(state: OverallState, config: RunnableConfig):
             "answer": state.get("answer", ""),
             "citations": state.get("citations", []),
         },
-        configurable.notes_dir,
+        configurable.note_dir,
     )
     return {}
 

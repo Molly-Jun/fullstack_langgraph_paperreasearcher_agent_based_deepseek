@@ -10,7 +10,8 @@ class Configuration(BaseModel):
     qa_model: str = Field(default="deepseek-chat")
     summary_language: str = Field(default="zh")
     max_sections: int = Field(default=10)
-    notes_dir: str = Field(default="./data/papers")
+    summary_dir: str = Field(default="./data/summary")
+    note_dir: str = Field(default="./data/note")
 
     @classmethod
     def from_runnable_config(

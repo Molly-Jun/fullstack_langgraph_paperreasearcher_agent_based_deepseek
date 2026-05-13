@@ -1,20 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Upload, Send, StopCircle, Brain, Cpu, ListFilter, Zap } from "lucide-react";
+import { Upload, Send, StopCircle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-
-const SUMMARY_PROMPTS = [
-  { value: "summary", label: "标准摘要", prompt: "请生成结构清晰、带页码引用的标准摘要。" },
-  { value: "detailed_summary", label: "详细摘要", prompt: "请生成更详细的摘要，覆盖尽可能多的关键信息，并带页码引用。" },
-  { value: "concise_summary", label: "精简摘要", prompt: "请生成简洁摘要，只保留最核心的信息，并带页码引用。" },
-];
 
 interface InputFormProps {
   onSubmit: (
@@ -38,20 +25,12 @@ export const InputForm: React.FC<InputFormProps> = ({
   onUploadPdf,
 }) => {
   const [internalInputValue, setInternalInputValue] = useState("");
-  const [summaryPrompts, setSummaryPrompts] = useState("summary");
-  const [effort, setEffort] = useState("medium");
-  const [model, setModel] = useState("deepseek-chat");
-  const selectedPrompt = SUMMARY_PROMPTS.find((item) => item.value === summaryPrompts);
 
   const handleQuestionSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!internalInputValue.trim()) return;
-    onSubmit(internalInputValue, selectedPrompt?.prompt ?? summaryPrompts, effort, model, "qa");
+    onSubmit(internalInputValue, "", "", "", "qa");
     setInternalInputValue("");
-  };
-
-  const handleSummarySubmit = () => {
-    onSubmit("", selectedPrompt?.prompt ?? summaryPrompts, effort, model, "summary");
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -68,65 +47,6 @@ export const InputForm: React.FC<InputFormProps> = ({
           hasHistory ? "rounded-br-sm" : ""
         } break-words min-h-7 bg-neutral-700 px-4 pt-4`}
       >
-        <div className="flex flex-wrap gap-2 items-center">
-          <div className="flex flex-row gap-2 bg-neutral-800/70 border-neutral-600 text-neutral-300 rounded-xl rounded-t-sm pl-2">
-            <div className="flex flex-row items-center text-sm ml-1">
-              <ListFilter className="h-4 w-4 mr-2" />
-              摘要模式
-            </div>
-            <Select value={summaryPrompts} onValueChange={setSummaryPrompts}>
-              <SelectTrigger className="w-[150px] bg-transparent border-none cursor-pointer">
-                <SelectValue placeholder="选择摘要模式" />
-              </SelectTrigger>
-              <SelectContent className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer">
-                {SUMMARY_PROMPTS.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-row gap-2 bg-neutral-800/70 border-neutral-600 text-neutral-300 rounded-xl rounded-t-sm pl-2">
-            <div className="flex flex-row items-center text-sm">
-              <Brain className="h-4 w-4 mr-2" />
-              Effort
-            </div>
-            <Select value={effort} onValueChange={setEffort}>
-              <SelectTrigger className="w-[120px] bg-transparent border-none cursor-pointer">
-                <SelectValue placeholder="Effort" />
-              </SelectTrigger>
-              <SelectContent className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer">
-                <SelectItem value="low">Low</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-row gap-2 bg-neutral-800/70 border-neutral-600 text-neutral-300 rounded-xl rounded-t-sm pl-2">
-            <div className="flex flex-row items-center text-sm ml-2">
-              <Cpu className="h-4 w-4 mr-2" />
-              Model
-            </div>
-            <Select value={model} onValueChange={setModel}>
-              <SelectTrigger className="w-[160px] bg-transparent border-none cursor-pointer">
-                <SelectValue placeholder="Model" />
-              </SelectTrigger>
-              <SelectContent className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer">
-                <SelectItem value="deepseek-chat">
-                  <div className="flex items-center">
-                    <Zap className="h-4 w-4 mr-2 text-yellow-400" /> DeepSeek Chat
-                  </div>
-                </SelectItem>
-                <SelectItem value="deepseek-reasoner">
-                  <div className="flex items-center">
-                    <Cpu className="h-4 w-4 mr-2 text-purple-400" /> DeepSeek Reasoner
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
         <div className="flex flex-col gap-2">
           <Textarea
             value={internalInputValue}
@@ -138,15 +58,6 @@ export const InputForm: React.FC<InputFormProps> = ({
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="default"
-                disabled={isLoading}
-                onClick={handleSummarySubmit}
-                className="bg-blue-600 hover:bg-blue-500 text-white cursor-pointer rounded-xl"
-              >
-                生成摘要
-              </Button>
               <Button
                 type="submit"
                 variant="ghost"
