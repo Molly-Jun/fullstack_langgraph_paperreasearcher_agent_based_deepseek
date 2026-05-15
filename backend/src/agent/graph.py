@@ -1,31 +1,60 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from agent.configuration import Configuration
 from agent.prompts import (
     final_summary_instructions,
-    qa_instructions,
+    note_critic_instructions,
+    note_drafter_instructions,
+    note_planner_instructions,
+    qa_critic_instructions,
+    qa_drafter_instructions,
+    qa_planner_instructions,
     section_summarizer_instructions,
     summary_prompts,
     summary_reflection_instructions,
 )
-from agent.state import OverallState, ParseState, ReflectionState, SectionState
-from agent.tools_and_schemas import QAResponse, ReflectionResult, SectionSummary
-from agent.utils import append_note, get_relevant_chunks, parse_pdf, save_summary, split_into_sections
+from agent.state import (
+    NoteState,
+    OverallState,
+    ParseState,
+    QAState,
+    ReflectionState,
+    SectionState,
+)
+from agent.tools_and_schemas import (
+    NoteCriticResult,
+    NotePlan,
+    QACriticResult,
+    QADraft,
+    QAPlan,
+    ReflectionResult,
+    SectionSummary,
+)
+from agent.utils import (
+    append_structured_note,
+    build_note_frontmatter,
+    filter_history_by_keyword,
+    format_history_window,
+    parse_pdf,
+    save_summary,
+    split_into_sections,
+    truncate_markdown,
+)
 
-load_dotenv()
 
-if os.getenv("DEEPSEEK_API_KEY") is None:
-    raise ValueError("DEEPSEEK_API_KEY is not set")
+MAX_QA_REVISIONS = 2
+MAX_NOTE_REVISIONS = 2
 
 
 def _make_llm(model_name: str):
@@ -34,33 +63,38 @@ def _make_llm(model_name: str):
         api_key=os.environ.get("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
         temperature=0,
-        max_retries=2,
+        max_retries=3,
+        timeout=90,
     )
+
+
+# =====================================================================
+# Summary 子图
+# =====================================================================
 
 
 def load_and_chunk(state: ParseState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     chunks = parse_pdf(state["pdf_path"])
-    sections = split_into_sections(chunks)
     paper_title = Path(state["pdf_path"]).stem
+    document_markdown = "\n\n".join(chunk["text"] for chunk in chunks)
     return {
         "paper_id": state["paper_id"],
         "paper_title": paper_title,
         "pdf_path": state["pdf_path"],
+        "pdf_markdown": document_markdown,
         "pdf_chunks": chunks,
         "section_summaries": [],
         "final_summary": "",
-        "summary_prompts": state.get("summary_prompts", "请生成结构清晰、带页码引用的标准摘要。"),
+        "summary_prompts": state.get("summary_prompts", summary_prompts["summary"]),
         "summary_dir": configurable.summary_dir,
         "note_dir": configurable.note_dir,
-        "sections": sections,
+        "sections": split_into_sections(chunks),
         "user_question": state.get("user_question", ""),
     }
 
 
 def continue_to_sections(state: OverallState):
-    # 为每一个章节生成一个 Send 对象，把局部状态（包含 section_text 等）发送给 summarize_section 节点
-    # 触发并行处理，写明节点以及对应传递的信息
     return [
         Send(
             "summarize_section",
@@ -69,7 +103,7 @@ def continue_to_sections(state: OverallState):
                 "section_text": section["text"],
                 "page_range": section["page_range"],
                 "paper_id": state["paper_id"],
-                "summary_prompts": state.get("summary_prompts", "请生成结构清晰、带页码引用的标准摘要。"),
+                "summary_prompts": state.get("summary_prompts", summary_prompts["summary"]),
             },
         )
         for section in state.get("sections", [])
@@ -94,9 +128,7 @@ def summarize_section(state: SectionState, config: RunnableConfig):
     prompt = f"{state.get('summary_prompts', summary_prompts['summary'])}\n\n{prompt}"
     structured_llm = llm.with_structured_output(SectionSummary, method="function_calling")
     result = structured_llm.invoke(prompt)
-    # 让llm生成结构化输出以便agent使用
     return {
-        # 结果会被 LangGraph 自动累加到 state["section_summaries"] 列表中
         "section_summaries": [
             {
                 "section_title": result.section_title,
@@ -128,30 +160,7 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
 
 
 def route_after_reflection(state: OverallState):
-    if state.get("is_complete", False):
-        return "finalize_summary"
-
-    sections_by_title = {section["title"]: section for section in state.get("sections", [])}
-    follow_up_titles = state.get("follow_up_sections", [])
-    resend = []
-
-    for title in follow_up_titles:
-        section = sections_by_title.get(title)
-        if section:
-            resend.append(
-                Send(
-                    "summarize_section",
-                    {
-                        "section_title": section["title"],
-                        "section_text": section["text"],
-                        "page_range": section["page_range"],
-                        "paper_id": state["paper_id"],
-                        "summary_prompts": state.get("summary_prompts", "请生成结构清晰、带页码引用的标准摘要。"),
-                    },
-                )
-            )
-
-    return resend if resend else "finalize_summary"
+    return "finalize_summary"
 
 
 def finalize_summary(state: OverallState, config: RunnableConfig):
@@ -171,73 +180,317 @@ def finalize_summary(state: OverallState, config: RunnableConfig):
     return {"final_summary": summary_text, "messages": [AIMessage(content=summary_text)]}
 
 
-def retrieve_context(state: OverallState):
-    relevant = get_relevant_chunks(state.get("pdf_chunks", []), state.get("user_question", ""))
-    return {"relevant_chunks": relevant}
+summary_builder = StateGraph(OverallState, config_schema=Configuration)
+summary_builder.add_node("parse_and_chunk", load_and_chunk)
+summary_builder.add_node("summarize_section", summarize_section)
+summary_builder.add_node("reflection", reflection)
+summary_builder.add_node("finalize_summary", finalize_summary)
+summary_builder.add_edge(START, "parse_and_chunk")
+summary_builder.add_conditional_edges("parse_and_chunk", continue_to_sections, ["summarize_section"])
+summary_builder.add_edge("summarize_section", "reflection")
+summary_builder.add_conditional_edges("reflection", route_after_reflection, ["finalize_summary"])
+summary_builder.add_edge("finalize_summary", END)
+summary_graph = summary_builder.compile(name="summary-agent")
 
 
-def answer_question(state: OverallState, config: RunnableConfig):
+# =====================================================================
+# QA 子图（HITL）
+# =====================================================================
+
+
+def qa_planner_node(state: QAState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     llm = _make_llm(configurable.qa_model)
-    prompt = qa_instructions.format(
+    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""))
+    history_text = format_history_window(state.get("qa_history_window", []), limit=10)
+    prompt = qa_planner_instructions.format(
         language=configurable.summary_language,
         paper_title=state.get("paper_title", "Untitled Paper"),
-        relevant_chunks=state.get("relevant_chunks", ""),
-        question=state.get("user_question", ""),
+        history=history_text,
+        user_question=state.get("user_question", ""),
+        paper_markdown=paper_markdown,
     )
-    structured_llm = llm.with_structured_output(QAResponse, method="function_calling")
+    structured_llm = llm.with_structured_output(QAPlan, method="function_calling")
     result = structured_llm.invoke(prompt)
+    plan_dict = {
+        "plan_text": result.plan_text,
+        "research_steps": result.research_steps,
+        "expected_evidence": result.expected_evidence,
+        "success_criteria": result.success_criteria,
+    }
     return {
-        "answer": result.answer,
-        "citations": result.citations,
-        "confidence": result.confidence,
-        "messages": [AIMessage(content=result.answer)],
+        "qa_plan": plan_dict,
+        "qa_plan_approved": False,
+        "qa_revision_count": 0,
+        "qa_interrupt_payload": {
+            "stage": "plan_review",
+            "plan": plan_dict,
+            "user_question": state.get("user_question", ""),
+        },
     }
 
 
-def save_note_node(state: OverallState, config: RunnableConfig):
+def _format_plan_block(plan: dict) -> str:
+    if not plan:
+        return "（无可用计划）"
+    parts = [plan.get("plan_text", "")]
+    steps = plan.get("research_steps") or []
+    if steps:
+        parts.append("**调研步骤：**\n" + "\n".join(f"- {s}" for s in steps))
+    evidence = plan.get("expected_evidence") or []
+    if evidence:
+        parts.append("**预期证据：**\n" + "\n".join(f"- {s}" for s in evidence))
+    criteria = plan.get("success_criteria") or []
+    if criteria:
+        parts.append("**成功标准：**\n" + "\n".join(f"- {s}" for s in criteria))
+    return "\n\n".join(p for p in parts if p)
+
+
+def qa_drafter_node(state: QAState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
-    paper_id = state.get("paper_id") or getattr(configurable, "paper_id", None)
-    if paper_id is None:
-        paper_id = "unknown"
-    append_note(
-        paper_id,
-        {
-            "question": state.get("user_question", ""),
-            "answer": state.get("answer", ""),
-            "citations": state.get("citations", []),
-        },
-        configurable.note_dir,
+    llm = _make_llm(configurable.qa_model)
+    plan = state.get("qa_plan") or {}
+    history_text = format_history_window(state.get("qa_history_window", []), limit=10)
+    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""))
+    revision_count = state.get("qa_revision_count", 0) or 0
+    revision_block = ""
+    critic = state.get("qa_critic_result") or {}
+    if revision_count > 0 and critic.get("rewrite_instructions"):
+        revision_block = (
+            "## 上一版被驳回，请按以下意见修改：\n"
+            f"{critic.get('rewrite_instructions')}\n\n"
+            f"上一版草稿：\n{state.get('qa_draft', '')}"
+        )
+
+    prompt = qa_drafter_instructions.format(
+        language=configurable.summary_language,
+        paper_title=state.get("paper_title", "Untitled Paper"),
+        approved_plan=_format_plan_block(plan),
+        history=history_text,
+        user_question=state.get("user_question", ""),
+        paper_markdown=paper_markdown,
+        revision_block=revision_block,
     )
-    return {}
+    structured_llm = llm.with_structured_output(QADraft, method="function_calling")
+    result = structured_llm.invoke(prompt)
+    return {
+        "qa_draft": result.answer,
+        "qa_draft_citations": result.citations,
+        "qa_draft_confidence": result.confidence,
+        "qa_revision_count": revision_count + 1,
+    }
 
 
-def route_by_mode(state: OverallState):
-    return "parse_and_chunk" if state.get("mode", "summary") == "summary" else "retrieve_context"
+def qa_critic_node(state: QAState, config: RunnableConfig):
+    configurable = Configuration.from_runnable_config(config)
+    llm = _make_llm(configurable.qa_model)
+    plan = state.get("qa_plan") or {}
+    prompt = qa_critic_instructions.format(
+        approved_plan=_format_plan_block(plan),
+        user_question=state.get("user_question", ""),
+        draft=state.get("qa_draft", ""),
+    )
+    structured_llm = llm.with_structured_output(QACriticResult, method="function_calling")
+    result = structured_llm.invoke(prompt)
+    critic_dict = {
+        "is_acceptable": result.is_acceptable,
+        "critique": result.critique,
+        "issues": result.issues,
+        "rewrite_instructions": result.rewrite_instructions,
+    }
+    return {"qa_critic_result": critic_dict}
 
 
-builder = StateGraph(OverallState, config_schema=Configuration)
+def route_after_qa_critic(state: QAState):
+    critic = state.get("qa_critic_result") or {}
+    revisions = state.get("qa_revision_count", 0) or 0
+    if critic.get("is_acceptable") or revisions >= (MAX_QA_REVISIONS + 1):
+        return "qa_finalize"
+    return "qa_drafter"
 
-builder.add_node("parse_and_chunk", load_and_chunk)
-builder.add_node("summarize_section", summarize_section)
-builder.add_node("reflection", reflection)
-builder.add_node("finalize_summary", finalize_summary)
-builder.add_node("retrieve_context", retrieve_context)
-builder.add_node("answer_question", answer_question)
-builder.add_node("save_note", save_note_node)
 
-builder.add_conditional_edges(START, route_by_mode, ["parse_and_chunk", "retrieve_context"])
-builder.add_conditional_edges("parse_and_chunk", continue_to_sections, ["summarize_section"])
-builder.add_edge("summarize_section", "reflection")
-builder.add_conditional_edges(
-    "reflection",
-    route_after_reflection,
-    ["summarize_section", "finalize_summary"],
+def qa_finalize_node(state: QAState, config: RunnableConfig):
+    answer = state.get("qa_draft", "")
+    citations = state.get("qa_draft_citations", []) or []
+    confidence = state.get("qa_draft_confidence", "medium") or "medium"
+    return {
+        "qa_final_answer": answer,
+        "citations": citations,
+        "confidence": confidence,
+    }
+
+
+qa_builder = StateGraph(QAState, config_schema=Configuration)
+qa_builder.add_node("qa_planner", qa_planner_node)
+qa_builder.add_node("qa_drafter", qa_drafter_node)
+qa_builder.add_node("qa_critic", qa_critic_node)
+qa_builder.add_node("qa_finalize", qa_finalize_node)
+qa_builder.add_edge(START, "qa_planner")
+qa_builder.add_edge("qa_planner", "qa_drafter")
+qa_builder.add_edge("qa_drafter", "qa_critic")
+qa_builder.add_conditional_edges("qa_critic", route_after_qa_critic, ["qa_drafter", "qa_finalize"])
+qa_builder.add_edge("qa_finalize", END)
+
+qa_checkpointer = MemorySaver()
+qa_graph = qa_builder.compile(
+    name="qa-agent",
+    checkpointer=qa_checkpointer,
+    interrupt_before=["qa_drafter"],
 )
-builder.add_edge("finalize_summary", END)
 
-builder.add_edge("retrieve_context", "answer_question")
-builder.add_edge("answer_question", "save_note")
-builder.add_edge("save_note", END)
 
-graph = builder.compile(name="paper-agent")
+# =====================================================================
+# Note 子图（后台静默）
+# =====================================================================
+
+
+def note_planner_node(state: NoteState, config: RunnableConfig):
+    configurable = Configuration.from_runnable_config(config)
+    llm = _make_llm(configurable.qa_model)
+    keyword = state.get("note_keyword", "") or ""
+    history = filter_history_by_keyword(state.get("qa_history_window", []), keyword)
+    history_text = format_history_window(history, limit=10)
+    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""), limit=12000)
+    prompt = note_planner_instructions.format(
+        paper_title=state.get("paper_title", "Untitled Paper"),
+        keyword=keyword or "（无关键词，按对话整体抽取）",
+        history=history_text,
+        paper_markdown=paper_markdown,
+    )
+    structured_llm = llm.with_structured_output(NotePlan, method="function_calling")
+    result = structured_llm.invoke(prompt)
+    plan_dict = {
+        "plan_text": result.plan_text,
+        "core_entities": result.core_entities,
+        "must_record": result.must_record,
+        "suggested_tags": result.suggested_tags,
+    }
+    return {"note_plan": plan_dict, "note_revision_count": 0}
+
+
+def _format_note_plan_block(plan: dict) -> str:
+    if not plan:
+        return "（无可用规划）"
+    parts = [plan.get("plan_text", "")]
+    entities = plan.get("core_entities") or []
+    if entities:
+        parts.append("**核心实体：**\n" + "\n".join(f"- {s}" for s in entities))
+    must = plan.get("must_record") or []
+    if must:
+        parts.append("**必录论点：**\n" + "\n".join(f"- {s}" for s in must))
+    tags = plan.get("suggested_tags") or []
+    if tags:
+        parts.append("**建议标签：** " + ", ".join(tags))
+    return "\n\n".join(p for p in parts if p)
+
+
+def note_drafter_node(state: NoteState, config: RunnableConfig):
+    configurable = Configuration.from_runnable_config(config)
+    llm = _make_llm(configurable.qa_model)
+    plan = state.get("note_plan") or {}
+    history = filter_history_by_keyword(
+        state.get("qa_history_window", []),
+        state.get("note_keyword", "") or "",
+    )
+    history_text = format_history_window(history, limit=10)
+    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""), limit=12000)
+    revision_count = state.get("note_revision_count", 0) or 0
+    critic = state.get("note_critic_result") or {}
+    revision_block = ""
+    if revision_count > 0 and critic.get("rewrite_instructions"):
+        revision_block = (
+            "## 上一版被驳回，请按以下意见修改：\n"
+            f"{critic.get('rewrite_instructions')}\n\n"
+            f"上一版笔记：\n{state.get('note_draft', '')}"
+        )
+
+    prompt = note_drafter_instructions.format(
+        plan_block=_format_note_plan_block(plan),
+        paper_title=state.get("paper_title", "Untitled Paper"),
+        paper_id=state.get("paper_id", ""),
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        history=history_text,
+        paper_markdown=paper_markdown,
+        revision_block=revision_block,
+    )
+    result = llm.invoke(prompt)
+    draft_text = result.content if hasattr(result, "content") else str(result)
+    return {
+        "note_draft": draft_text,
+        "note_revision_count": revision_count + 1,
+    }
+
+
+def note_critic_node(state: NoteState, config: RunnableConfig):
+    configurable = Configuration.from_runnable_config(config)
+    llm = _make_llm(configurable.qa_model)
+    plan = state.get("note_plan") or {}
+    prompt = note_critic_instructions.format(
+        plan_block=_format_note_plan_block(plan),
+        draft=state.get("note_draft", ""),
+    )
+    structured_llm = llm.with_structured_output(NoteCriticResult, method="function_calling")
+    result = structured_llm.invoke(prompt)
+    critic_dict = {
+        "is_acceptable": result.is_acceptable,
+        "coverage_issues": result.coverage_issues,
+        "style_issues": result.style_issues,
+        "rewrite_instructions": result.rewrite_instructions,
+    }
+    return {"note_critic_result": critic_dict}
+
+
+def route_after_note_critic(state: NoteState):
+    critic = state.get("note_critic_result") or {}
+    revisions = state.get("note_revision_count", 0) or 0
+    if critic.get("is_acceptable") or revisions >= (MAX_NOTE_REVISIONS + 1):
+        return "note_persist"
+    return "note_drafter"
+
+
+def _ensure_frontmatter(note_markdown: str, state: NoteState) -> str:
+    """若模型遗漏 frontmatter，则补一个最小可用的。"""
+    if note_markdown.lstrip().startswith("---"):
+        return note_markdown
+    plan = state.get("note_plan") or {}
+    tags = plan.get("suggested_tags") or []
+    one_line = (plan.get("plan_text") or "笔记自动生成").split("\n", 1)[0][:80]
+    frontmatter = build_note_frontmatter(
+        paper_id=state.get("paper_id", ""),
+        paper_title=state.get("paper_title", "Untitled Paper"),
+        one_line_summary=one_line,
+        tags=tags,
+    )
+    return f"{frontmatter}\n{note_markdown}"
+
+
+def note_persist_node(state: NoteState, config: RunnableConfig):
+    configurable = Configuration.from_runnable_config(config)
+    final_note = _ensure_frontmatter(state.get("note_draft", ""), state)
+    note_path = append_structured_note(
+        paper_id=state.get("paper_id", ""),
+        note_markdown=final_note,
+        note_dir=configurable.note_dir,
+    )
+    return {"final_note": final_note, "note_path": note_path}
+
+
+note_builder = StateGraph(NoteState, config_schema=Configuration)
+note_builder.add_node("note_planner", note_planner_node)
+note_builder.add_node("note_drafter", note_drafter_node)
+note_builder.add_node("note_critic", note_critic_node)
+note_builder.add_node("note_persist", note_persist_node)
+note_builder.add_edge(START, "note_planner")
+note_builder.add_edge("note_planner", "note_drafter")
+note_builder.add_edge("note_drafter", "note_critic")
+note_builder.add_conditional_edges("note_critic", route_after_note_critic, ["note_drafter", "note_persist"])
+note_builder.add_edge("note_persist", END)
+note_graph = note_builder.compile(name="note-agent")
+
+
+# =====================================================================
+# 主图：保留默认入口（langgraph dev 可视化），仅包装 summary 流
+# =====================================================================
+
+
+graph = summary_graph

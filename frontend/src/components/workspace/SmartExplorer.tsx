@@ -6,7 +6,7 @@ type ExplorerFilter = "all" | "paper" | "note";
 interface ExplorerItem {
   id: string;
   name: string;
-  type: "paper" | "notes";
+  type: "paper" | "note";
   status?: "done" | "empty";
   children?: ExplorerItem[];
 }
@@ -30,7 +30,7 @@ export function SmartExplorer({
 }: SmartExplorerProps) {
   const filteredItems = papers.filter((item) => {
     if (activeFilter === "all") return true;
-    if (activeFilter === "note") return item.type === "notes";
+    if (activeFilter === "note") return item.type === "note";
     return item.type === activeFilter;
   });
 

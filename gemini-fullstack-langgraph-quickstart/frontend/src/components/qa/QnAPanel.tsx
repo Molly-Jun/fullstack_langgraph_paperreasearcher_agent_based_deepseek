@@ -3,23 +3,10 @@ import { useState } from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 import type { ProcessedEvent } from "@/components/ActivityTimeline";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
+import { NotePromptBar } from "./NotePromptBar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-
-export type QAPlan = {
-  plan_text?: string;
-  research_steps?: string[];
-  expected_evidence?: string[];
-  success_criteria?: string[];
-};
-
-export type NoteJobStatus = {
-  jobId: string;
-  status: "queued" | "running" | "done" | "error";
-  notePath?: string | null;
-  error?: string | null;
-} | null;
 
 interface QnAPanelProps {
   messages: Message[];
@@ -38,29 +25,6 @@ interface QnAPanelProps {
   historicalActivities: Record<string, ProcessedEvent[]>;
   qaAnswer: string | null;
   qaCitations: string[];
-  qaPlan: QAPlan | null;
-  qaIsPlanning: boolean;
-  qaIsAnswering: boolean;
-  onApprovePlan: (plan: QAPlan) => void;
-  onCancelPlan: () => void;
-  onExtractNote: (keyword: string) => void;
-  noteJob: NoteJobStatus;
-}
-
-function planToText(plan: QAPlan | null): string {
-  if (!plan) return "";
-  const parts: string[] = [];
-  if (plan.plan_text) parts.push(plan.plan_text);
-  if (plan.research_steps?.length) {
-    parts.push("**调研步骤：**\n" + plan.research_steps.map((s) => `- ${s}`).join("\n"));
-  }
-  if (plan.expected_evidence?.length) {
-    parts.push("**预期证据：**\n" + plan.expected_evidence.map((s) => `- ${s}`).join("\n"));
-  }
-  if (plan.success_criteria?.length) {
-    parts.push("**成功标准：**\n" + plan.success_criteria.map((s) => `- ${s}`).join("\n"));
-  }
-  return parts.join("\n\n");
 }
 
 export function QnAPanel({
@@ -74,77 +38,56 @@ export function QnAPanel({
   historicalActivities,
   qaAnswer,
   qaCitations,
-  qaPlan,
-  qaIsPlanning,
-  qaIsAnswering,
-  onApprovePlan,
-  onCancelPlan,
-  onExtractNote,
-  noteJob,
 }: QnAPanelProps) {
-  const [planEditValue, setPlanEditValue] = useState("");
+  const [isNoteActive, setIsNoteActive] = useState(false);
+  const [qaPlan, setQaPlan] = useState<string | null>(null);
+  const [qaPlanEditValue, setQaPlanEditValue] = useState("");
   const [noteKeyword, setNoteKeyword] = useState("");
-
-  const planText = planToText(qaPlan);
-  const noteRunning = noteJob && (noteJob.status === "queued" || noteJob.status === "running");
 
   return (
     <div className="flex h-full flex-col bg-[#0b0f17] text-slate-100">
       <div className="border-b border-slate-800/80 px-4 py-4">
-        <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Q&amp;A Panel</div>
-        <div className="mt-2 text-xl font-semibold text-slate-50">右栏问答与笔记</div>
+        <div className="text-xs uppercase tracking-[0.24em] text-slate-500">
+          Q&amp;A Panel
+        </div>
+        <div className="mt-2 text-xl font-semibold text-slate-50">
+          笔记预留入口
+        </div>
       </div>
 
       <div className="flex-1 overflow-hidden px-3 py-3">
         <div className="flex h-full flex-col gap-3 overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/40 p-3">
-          {qaIsPlanning ? (
-            <div className="shrink-0 rounded-2xl border border-slate-700 bg-slate-900/70 p-3 text-sm text-slate-300">
-              正在阅读全文并生成《调研/答题计划》……
-            </div>
-          ) : null}
-
           {qaPlan ? (
             <div className="shrink-0 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-3">
               <div className="mb-2 text-xs uppercase tracking-[0.2em] text-cyan-200">
-                答题计划审批（HITL）
+                答题计划审批
               </div>
-              <ScrollArea className="h-64 pr-3">
-                <div className="prose prose-invert max-w-none text-sm leading-7 text-slate-100">
-                  <ReactMarkdown>{planText}</ReactMarkdown>
-                </div>
-              </ScrollArea>
+              <div className="prose prose-invert max-w-none text-sm leading-7 text-slate-100">
+                <ReactMarkdown>{qaPlan}</ReactMarkdown>
+              </div>
               <Textarea
-                value={planEditValue}
-                onChange={(e) => setPlanEditValue(e.target.value)}
-                placeholder="如需修改计划，可在此粘贴或编辑后再点【同意并执行】"
+                value={qaPlanEditValue}
+                onChange={(e) => setQaPlanEditValue(e.target.value)}
+                placeholder="修改计划后再执行"
                 className="mt-3 min-h-28 border-slate-700 bg-slate-950 text-slate-100"
               />
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3 flex gap-2">
                 <Button
                   type="button"
                   className="bg-cyan-500 text-white hover:bg-cyan-400"
-                  disabled={qaIsAnswering}
                   onClick={() => {
-                    if (planEditValue.trim()) {
-                      onApprovePlan({ ...qaPlan, plan_text: planEditValue.trim() });
-                    } else {
-                      onApprovePlan(qaPlan);
-                    }
-                    setPlanEditValue("");
+                    onSubmit(qaPlanEditValue || qaPlan, qaPlanEditValue || qaPlan, "medium", "deepseek-chat", "qa");
+                    setQaPlan(null);
                   }}
                 >
-                  {qaIsAnswering ? "答题中…" : "同意并执行"}
+                  同意并执行
                 </Button>
                 <Button
                   type="button"
                   variant="secondary"
-                  disabled={qaIsAnswering}
-                  onClick={() => {
-                    setPlanEditValue("");
-                    onCancelPlan();
-                  }}
+                  onClick={() => setQaPlan(qaPlanEditValue || qaPlan)}
                 >
-                  取消
+                  修改计划
                 </Button>
               </div>
             </div>
@@ -155,7 +98,7 @@ export function QnAPanel({
               当前问答结果
             </div>
             {qaAnswer ? (
-              <ScrollArea className="h-52 pr-3">
+              <ScrollArea className="max-h-44 pr-3">
                 <div className="prose prose-invert max-w-none text-sm leading-7 text-slate-100">
                   <ReactMarkdown>{qaAnswer}</ReactMarkdown>
                 </div>
@@ -196,25 +139,18 @@ export function QnAPanel({
             placeholder="笔记关键词（可选）"
             className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
           />
-          <Button
-            type="button"
-            className="bg-cyan-500 text-white hover:bg-cyan-400"
-            disabled={!!noteRunning}
-            onClick={() => onExtractNote(noteKeyword)}
-          >
-            {noteRunning ? "笔记生成中…" : "提取笔记"}
+          <Button type="button" className="bg-cyan-500 text-white hover:bg-cyan-400" onClick={() => setIsNoteActive((prev) => !prev)}>
+            提取笔记
           </Button>
         </div>
-        {noteJob ? (
-          <div className="mt-2 text-xs text-slate-400">
-            {noteJob.status === "done"
-              ? `笔记已写入 ${noteJob.notePath ?? "data/note"}`
-              : noteJob.status === "error"
-              ? `笔记生成失败：${noteJob.error ?? ""}`
-              : "笔记 Agent 正在后台运行……"}
-          </div>
-        ) : null}
       </div>
+
+      <NotePromptBar onNoteClick={() => setIsNoteActive((prev) => !prev)} isActive={isNoteActive} />
+      {isNoteActive ? (
+        <div className="px-4 pb-4 text-xs text-cyan-200">
+          后续可在这里接入独立的笔记抽取流程。{noteKeyword ? ` 当前关键词：${noteKeyword}` : ""}
+        </div>
+      ) : null}
     </div>
   );
 }
