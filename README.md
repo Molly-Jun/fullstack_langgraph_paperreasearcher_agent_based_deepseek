@@ -9,9 +9,12 @@
 用户上传 PDF 后，系统会解析论文内容，生成结构化摘要；随后用户可以围绕同一篇论文继续提问，系统会先生成答题计划，再在用户审批后输出答案与引用；同时，问答过程还会被保存为 Markdown 笔记，方便后续复习和整理。
 
 项目的核心价值在于把“上传、阅读、摘要、提问、复盘”串成一条完整工作流，并把执行过程可视化出来。
-![Uploading 1.png…]()
+<img width="1903" height="941" alt="1" src="https://github.com/user-attachments/assets/c0686035-dc35-40bb-8d65-c574d3020aea" />
+
+<img width="1905" height="940" alt="2" src="https://github.com/user-attachments/assets/721ea32e-0255-42a5-8af3-3b149269ed9f" />
+
 <img width="961" height="630" alt="3" src="https://github.com/user-attachments/assets/6c766366-7bf9-4729-aa89-9404d98d664d" />
-![Uploading 2.png…]()
+
 
 
 ## 特点
