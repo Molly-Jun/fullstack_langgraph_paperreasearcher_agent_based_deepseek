@@ -10,8 +10,6 @@ import { Textarea } from "@/components/ui/textarea";
 export type QAPlan = {
   plan_text?: string;
   research_steps?: string[];
-  expected_evidence?: string[];
-  success_criteria?: string[];
 };
 
 export type NoteJobStatus = {
@@ -33,7 +31,6 @@ interface QnAPanelProps {
     mode: "summary" | "qa"
   ) => void;
   onCancel: () => void;
-  onUploadPdf: (file: File) => void;
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
   qaAnswer: string | null;
@@ -54,12 +51,6 @@ function planToText(plan: QAPlan | null): string {
   if (plan.research_steps?.length) {
     parts.push("**调研步骤：**\n" + plan.research_steps.map((s) => `- ${s}`).join("\n"));
   }
-  if (plan.expected_evidence?.length) {
-    parts.push("**预期证据：**\n" + plan.expected_evidence.map((s) => `- ${s}`).join("\n"));
-  }
-  if (plan.success_criteria?.length) {
-    parts.push("**成功标准：**\n" + plan.success_criteria.map((s) => `- ${s}`).join("\n"));
-  }
   return parts.join("\n\n");
 }
 
@@ -69,7 +60,6 @@ export function QnAPanel({
   scrollAreaRef,
   onSubmit,
   onCancel,
-  onUploadPdf,
   liveActivityEvents,
   historicalActivities,
   qaAnswer,
@@ -90,11 +80,6 @@ export function QnAPanel({
 
   return (
     <div className="flex h-full flex-col bg-[#0b0f17] text-slate-100">
-      <div className="border-b border-slate-800/80 px-4 py-4">
-        <div className="text-xs uppercase tracking-[0.24em] text-slate-500">Q&amp;A Panel</div>
-        <div className="mt-2 text-xl font-semibold text-slate-50">右栏问答与笔记</div>
-      </div>
-
       <div className="flex-1 overflow-hidden px-3 py-3">
         <div className="flex h-full flex-col gap-3 overflow-hidden rounded-3xl border border-slate-800 bg-slate-950/40 p-3">
           {qaIsPlanning ? (
@@ -180,7 +165,6 @@ export function QnAPanel({
               scrollAreaRef={scrollAreaRef}
               onSubmit={onSubmit}
               onCancel={onCancel}
-              onUploadPdf={onUploadPdf}
               liveActivityEvents={liveActivityEvents}
               historicalActivities={historicalActivities}
             />

@@ -20,49 +20,39 @@ export function AdaptiveReader({
   onSummaryPromptChange,
   onGenerateSummary,
 }: AdaptiveReaderProps) {
-  const [bodyCollapsed, setBodyCollapsed] = useState(false);
   const [summaryDocked, setSummaryDocked] = useState(false);
 
   useEffect(() => {
-    setBodyCollapsed(false);
     setSummaryDocked(false);
   }, [paperUrl]);
 
-  const bodyVisible = !bodyCollapsed;
   const summaryVisible = !summaryDocked;
-  const bodyFlex = bodyVisible && summaryVisible ? "flex-[0.78]" : "flex-1";
-  const summaryFlex = bodyVisible && summaryVisible ? "flex-[0.22]" : "flex-1";
+  const bodyFlex = summaryVisible ? "flex-[0.62]" : "flex-1";
+  const summaryFlex = summaryVisible ? "flex-[0.38]" : "flex-1";
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-4">
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         <div className={`min-h-0 ${bodyFlex}`}>
-          <CollapsiblePanel
-            title="正文区"
-            collapsed={!bodyVisible}
-            onToggle={() => setBodyCollapsed((value) => !value)}
-            tone="light"
-          >
-            <div className="min-h-0">
-              {paperUrl ? (
-                <object
-                  data={paperUrl}
-                  type="application/pdf"
-                  className="h-[80vh] w-full rounded-xl border border-slate-200 bg-white"
-                >
-                  <iframe
-                    title="paper"
-                    src={paperUrl}
-                    className="h-[80vh] w-full rounded-xl border border-slate-200 bg-white"
-                  />
-                </object>
-              ) : (
-                <div className="flex h-[78vh] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-400">
-                  点击左侧任意文档后，这里会直接显示 PDF。
-                </div>
-              )}
-            </div>
-          </CollapsiblePanel>
+          <div className="h-full min-h-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
+            {paperUrl ? (
+              <object
+                data={paperUrl}
+                type="application/pdf"
+                className="h-full min-h-0 w-full rounded-2xl bg-white"
+              >
+                <iframe
+                  title="paper"
+                  src={paperUrl}
+                  className="h-full min-h-0 w-full rounded-2xl bg-white"
+                />
+              </object>
+            ) : (
+              <div className="flex h-full min-h-0 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-400">
+                点击左侧任意文档后，这里会直接显示 PDF。
+              </div>
+            )}
+          </div>
         </div>
 
         <div className={summaryVisible ? `min-h-0 ${summaryFlex}` : "mt-auto min-h-0"}>
@@ -72,7 +62,7 @@ export function AdaptiveReader({
             onToggle={() => setSummaryDocked((value) => !value)}
             tone="light"
           >
-            <div className="flex max-h-[24vh] min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+            <div className="max-h-[36vh] overflow-y-auto pr-1">
               {!summaryText ? (
                 <SummaryControlPanel
                   value={summaryPrompts}

@@ -1,12 +1,12 @@
 import { Upload, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-type ExplorerFilter = "all" | "paper" | "note";
+type ExplorerFilter = "all" | "paper" | "summary";
 
 interface ExplorerItem {
   id: string;
   name: string;
-  type: "paper" | "note";
+  type: "paper" | "summary";
   status?: "done" | "empty";
   children?: ExplorerItem[];
 }
@@ -30,21 +30,12 @@ export function SmartExplorer({
 }: SmartExplorerProps) {
   const filteredItems = papers.filter((item) => {
     if (activeFilter === "all") return true;
-    if (activeFilter === "note") return item.type === "note";
+    if (activeFilter === "summary") return item.type === "summary";
     return item.type === activeFilter;
   });
 
   return (
     <div className="flex h-full flex-col px-4 py-4 text-slate-100">
-      <div className="mb-4">
-        <div className="text-xs uppercase tracking-[0.28em] text-slate-400">
-          Smart Explorer
-        </div>
-        <div className="mt-2 text-lg font-semibold text-slate-50">
-          智能资源管理器
-        </div>
-      </div>
-
       <div className="mb-4 flex gap-2">
         <Button
           type="button"
@@ -76,7 +67,7 @@ export function SmartExplorer({
         {[
           ["all", "全部"],
           ["paper", "论文"],
-          ["note", "笔记"],
+          ["summary", "摘要"],
         ].map(([value, label]) => (
           <button
             key={value}
@@ -105,7 +96,7 @@ export function SmartExplorer({
                 <div>
                   <div className="text-sm font-medium text-slate-100">{item.name}</div>
                   <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">
-                    {item.type === "paper" ? "PDF" : item.type === "notes" ? "NOTE" : "SUMMARY"}
+                    {item.type === "paper" ? "PDF" : "SUMMARY"}
                   </div>
                 </div>
                 {item.status === "done" ? (

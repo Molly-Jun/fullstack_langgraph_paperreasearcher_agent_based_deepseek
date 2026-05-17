@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Upload, Send, StopCircle } from "lucide-react";
+import { Send, StopCircle } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 
 interface InputFormProps {
@@ -14,7 +14,6 @@ interface InputFormProps {
   onCancel: () => void;
   isLoading: boolean;
   hasHistory: boolean;
-  onUploadPdf: (file: File) => void;
 }
 
 export const InputForm: React.FC<InputFormProps> = ({
@@ -22,7 +21,6 @@ export const InputForm: React.FC<InputFormProps> = ({
   onCancel,
   isLoading,
   hasHistory,
-  onUploadPdf,
 }) => {
   const [internalInputValue, setInternalInputValue] = useState("");
 
@@ -81,31 +79,6 @@ export const InputForm: React.FC<InputFormProps> = ({
             ) : null}
           </div>
         </div>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="flex flex-row items-center gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 rounded-xl rounded-t-sm px-3 py-2 cursor-pointer">
-          <Upload className="h-4 w-4" />
-          上传 PDF
-          <input
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) onUploadPdf(file);
-            }}
-          />
-        </label>
-        {hasHistory && (
-          <Button
-            className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer rounded-xl rounded-t-sm pl-2"
-            variant="default"
-            onClick={() => window.location.reload()}
-          >
-            <Upload size={16} />
-            New Paper
-          </Button>
-        )}
       </div>
     </form>
   );

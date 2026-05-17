@@ -6,6 +6,17 @@ frontend/coverage/
 .DS_Store
 *.local
 
+
+# data
+backend/data/pdf/*
+backend/data/summary/*
+backend/data/note/*
+backend/data/markdown/*
+# 但保留目录结构空文件夹
+!backenddata/pdf/.gitkeep
+!backenddata/summary/.gitkeep
+!backenddata/note/.gitkeep
+
 # Logs
 logs
 *.log

@@ -85,7 +85,16 @@ async def get_workspace_summary(paper_id: str):
 
 @app.get("/api/workspace/{paper_id}/notes")
 async def get_workspace_notes(paper_id: str):
-    notes_path = workspace_note_dir() / f"{paper_id}_notes.md"
+    del paper_id  # 全局笔记不再按 paper_id 拆分文件
+    notes_path = workspace_note_dir() / "note.md"
+    if not notes_path.is_file():
+        raise HTTPException(status_code=404, detail="Notes not found")
+    return Response(notes_path.read_text(encoding="utf-8"), media_type="text/markdown")
+
+
+@app.get("/api/notes")
+async def get_global_notes():
+    notes_path = workspace_note_dir() / "note.md"
     if not notes_path.is_file():
         raise HTTPException(status_code=404, detail="Notes not found")
     return Response(notes_path.read_text(encoding="utf-8"), media_type="text/markdown")

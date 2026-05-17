@@ -49,7 +49,6 @@ from agent.utils import (
     parse_pdf,
     save_summary,
     split_into_sections,
-    truncate_markdown,
 )
 
 
@@ -101,7 +100,6 @@ def continue_to_sections(state: OverallState):
             {
                 "section_title": section["title"],
                 "section_text": section["text"],
-                "page_range": section["page_range"],
                 "paper_id": state["paper_id"],
                 "summary_prompts": state.get("summary_prompts", summary_prompts["summary"]),
             },
@@ -114,7 +112,6 @@ def summarize_section(state: SectionState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     section_title = state.get("section_title", "")
     section_text = state.get("section_text", "")
-    page_range = state.get("page_range", "")
     if not section_title or not section_text:
         return {"section_summaries": []}
 
@@ -122,7 +119,6 @@ def summarize_section(state: SectionState, config: RunnableConfig):
     prompt = section_summarizer_instructions.format(
         language=configurable.summary_language,
         section_title=section_title,
-        page_range=page_range,
         section_text=section_text,
     )
     prompt = f"{state.get('summary_prompts', summary_prompts['summary'])}\n\n{prompt}"
@@ -133,6 +129,7 @@ def summarize_section(state: SectionState, config: RunnableConfig):
             {
                 "section_title": result.section_title,
                 "key_points": result.key_points,
+                "key_entities": result.key_entities,
                 "summary_text": result.summary_text,
                 "citations": result.citations,
             }
@@ -163,16 +160,30 @@ def route_after_reflection(state: OverallState):
     return "finalize_summary"
 
 
+def _format_section_summary_block(item: dict) -> str:
+    title = item.get("section_title", "")
+    summary = item.get("summary_text", "")
+    entities = item.get("key_entities") or []
+    citations = item.get("citations") or []
+    parts = [f"### {title}", summary]
+    if entities:
+        parts.append("- key_entities: " + ", ".join(entities))
+    if citations:
+        parts.append("- citations: " + "; ".join(citations))
+    return "\n".join(parts)
+
+
 def finalize_summary(state: OverallState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     llm = _make_llm(configurable.summary_model)
+    summaries_block = "\n\n---\n\n".join(
+        _format_section_summary_block(item)
+        for item in state.get("section_summaries", [])
+    )
     prompt = final_summary_instructions.format(
         language=configurable.summary_language,
         paper_title=state.get("paper_title", "Untitled Paper"),
-        summaries="\n\n---\n\n".join(
-            f"### {item['section_title']}\n{item['summary_text']}\n\n- Citations: {', '.join(item.get('citations', []))}"
-            for item in state.get("section_summaries", [])
-        ),
+        summaries=summaries_block,
     )
     result = llm.invoke(prompt)
     summary_text = result.content if hasattr(result, "content") else str(result)
@@ -201,7 +212,7 @@ summary_graph = summary_builder.compile(name="summary-agent")
 def qa_planner_node(state: QAState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     llm = _make_llm(configurable.qa_model)
-    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""))
+    paper_markdown = state.get("pdf_markdown", "")
     history_text = format_history_window(state.get("qa_history_window", []), limit=10)
     prompt = qa_planner_instructions.format(
         language=configurable.summary_language,
@@ -215,8 +226,6 @@ def qa_planner_node(state: QAState, config: RunnableConfig):
     plan_dict = {
         "plan_text": result.plan_text,
         "research_steps": result.research_steps,
-        "expected_evidence": result.expected_evidence,
-        "success_criteria": result.success_criteria,
     }
     return {
         "qa_plan": plan_dict,
@@ -237,12 +246,6 @@ def _format_plan_block(plan: dict) -> str:
     steps = plan.get("research_steps") or []
     if steps:
         parts.append("**调研步骤：**\n" + "\n".join(f"- {s}" for s in steps))
-    evidence = plan.get("expected_evidence") or []
-    if evidence:
-        parts.append("**预期证据：**\n" + "\n".join(f"- {s}" for s in evidence))
-    criteria = plan.get("success_criteria") or []
-    if criteria:
-        parts.append("**成功标准：**\n" + "\n".join(f"- {s}" for s in criteria))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -251,7 +254,7 @@ def qa_drafter_node(state: QAState, config: RunnableConfig):
     llm = _make_llm(configurable.qa_model)
     plan = state.get("qa_plan") or {}
     history_text = format_history_window(state.get("qa_history_window", []), limit=10)
-    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""))
+    paper_markdown = state.get("pdf_markdown", "")
     revision_count = state.get("qa_revision_count", 0) or 0
     revision_block = ""
     critic = state.get("qa_critic_result") or {}
@@ -350,7 +353,7 @@ def note_planner_node(state: NoteState, config: RunnableConfig):
     keyword = state.get("note_keyword", "") or ""
     history = filter_history_by_keyword(state.get("qa_history_window", []), keyword)
     history_text = format_history_window(history, limit=10)
-    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""), limit=12000)
+    paper_markdown = state.get("pdf_markdown", "")
     prompt = note_planner_instructions.format(
         paper_title=state.get("paper_title", "Untitled Paper"),
         keyword=keyword or "（无关键词，按对话整体抽取）",
@@ -361,9 +364,8 @@ def note_planner_node(state: NoteState, config: RunnableConfig):
     result = structured_llm.invoke(prompt)
     plan_dict = {
         "plan_text": result.plan_text,
-        "core_entities": result.core_entities,
-        "must_record": result.must_record,
-        "suggested_tags": result.suggested_tags,
+        "must_record_qa": result.must_record_qa,
+        "one_line_summary": result.one_line_summary,
     }
     return {"note_plan": plan_dict, "note_revision_count": 0}
 
@@ -372,15 +374,12 @@ def _format_note_plan_block(plan: dict) -> str:
     if not plan:
         return "（无可用规划）"
     parts = [plan.get("plan_text", "")]
-    entities = plan.get("core_entities") or []
-    if entities:
-        parts.append("**核心实体：**\n" + "\n".join(f"- {s}" for s in entities))
-    must = plan.get("must_record") or []
-    if must:
-        parts.append("**必录论点：**\n" + "\n".join(f"- {s}" for s in must))
-    tags = plan.get("suggested_tags") or []
-    if tags:
-        parts.append("**建议标签：** " + ", ".join(tags))
+    qa_items = plan.get("must_record_qa") or []
+    if qa_items:
+        parts.append("**必录问答要点：**\n" + "\n".join(f"- {s}" for s in qa_items))
+    one_line = plan.get("one_line_summary") or ""
+    if one_line:
+        parts.append(f"**一句话总结：** {one_line}")
     return "\n\n".join(p for p in parts if p)
 
 
@@ -393,7 +392,7 @@ def note_drafter_node(state: NoteState, config: RunnableConfig):
         state.get("note_keyword", "") or "",
     )
     history_text = format_history_window(history, limit=10)
-    paper_markdown = truncate_markdown(state.get("pdf_markdown", ""), limit=12000)
+    paper_markdown = state.get("pdf_markdown", "")
     revision_count = state.get("note_revision_count", 0) or 0
     critic = state.get("note_critic_result") or {}
     revision_block = ""
@@ -407,7 +406,6 @@ def note_drafter_node(state: NoteState, config: RunnableConfig):
     prompt = note_drafter_instructions.format(
         plan_block=_format_note_plan_block(plan),
         paper_title=state.get("paper_title", "Untitled Paper"),
-        paper_id=state.get("paper_id", ""),
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         history=history_text,
         paper_markdown=paper_markdown,
@@ -449,17 +447,14 @@ def route_after_note_critic(state: NoteState):
 
 
 def _ensure_frontmatter(note_markdown: str, state: NoteState) -> str:
-    """若模型遗漏 frontmatter，则补一个最小可用的。"""
+    """若模型遗漏 frontmatter，则补一个最小可用的（仅含 timestamp / paper_title / one_line_summary）。"""
     if note_markdown.lstrip().startswith("---"):
         return note_markdown
     plan = state.get("note_plan") or {}
-    tags = plan.get("suggested_tags") or []
-    one_line = (plan.get("plan_text") or "笔记自动生成").split("\n", 1)[0][:80]
+    one_line = (plan.get("one_line_summary") or "笔记自动生成").strip().split("\n", 1)[0][:80]
     frontmatter = build_note_frontmatter(
-        paper_id=state.get("paper_id", ""),
         paper_title=state.get("paper_title", "Untitled Paper"),
         one_line_summary=one_line,
-        tags=tags,
     )
     return f"{frontmatter}\n{note_markdown}"
 
@@ -468,7 +463,6 @@ def note_persist_node(state: NoteState, config: RunnableConfig):
     configurable = Configuration.from_runnable_config(config)
     final_note = _ensure_frontmatter(state.get("note_draft", ""), state)
     note_path = append_structured_note(
-        paper_id=state.get("paper_id", ""),
         note_markdown=final_note,
         note_dir=configurable.note_dir,
     )

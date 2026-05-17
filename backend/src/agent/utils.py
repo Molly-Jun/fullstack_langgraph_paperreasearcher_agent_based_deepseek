@@ -15,8 +15,10 @@ NOTE_DIR = WORKSPACE_ROOT / "note"
 SUMMARY_DIR = WORKSPACE_ROOT / "summary"
 MARKDOWN_DIR = WORKSPACE_ROOT / "markdown"
 
+GLOBAL_NOTE_FILENAME = "note.md"
+
 MIN_SECTION_CHARS = 300
-MAX_SECTION_CHARS = 6000
+MAX_SECTION_CHARS = 8000
 
 
 def parse_pdf_to_markdown(pdf_path: str) -> str:
@@ -24,25 +26,13 @@ def parse_pdf_to_markdown(pdf_path: str) -> str:
     return pymupdf4llm.to_markdown(pdf_path)
 
 
-def _infer_page_range(text: str, fallback_index: int) -> str:
-    """根据 pymupdf4llm 输出中的页码标记推断页码范围。"""
-    matches = re.findall(r"\{(\d+)\}", text) + re.findall(r"\[page\s*(\d+)\]", text, flags=re.IGNORECASE)
-    pages = sorted({int(m) for m in matches if m.isdigit()})
-    if not pages:
-        return f"section-{fallback_index}"
-    if len(pages) == 1:
-        return f"p.{pages[0]}"
-    return f"p.{pages[0]}-{pages[-1]}"
-
-
 def _normalize_text(text: str) -> str:
-    cleaned = re.sub(r"\{\d+\}", "", text)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", text)
     return cleaned.strip()
 
 
 def split_markdown_sections(markdown_text: str) -> list[dict[str, Any]]:
-    """按 #/##/### 标题进行语义切分，并对过短章节做合并。"""
+    """按 #/##/### 标题进行语义切分，并对过短章节做合并。引用以章节名为锚点。"""
     splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=[
             ("#", "h1"),
@@ -67,46 +57,37 @@ def split_markdown_sections(markdown_text: str) -> list[dict[str, Any]]:
         raw_sections.append(
             {
                 "title": title,
-                "page_range": _infer_page_range(content, index),
                 "text": _normalize_text(content),
             }
         )
 
     if not raw_sections:
         normalized = _normalize_text(markdown_text)
-        return [
-            {
-                "title": "Document",
-                "page_range": "p.1",
-                "text": normalized,
-            }
-        ]
+        return [{"title": "Document", "text": normalized}]
 
     merged: list[dict[str, Any]] = []
     for section in raw_sections:
         if merged and len(section["text"]) < MIN_SECTION_CHARS:
             previous = merged[-1]
             previous["text"] = f"{previous['text']}\n\n{section['text']}"
-            previous["page_range"] = _merge_page_range(previous["page_range"], section["page_range"])
             continue
         merged.append(section)
 
-    truncated: list[dict[str, Any]] = []
+    final: list[dict[str, Any]] = []
     for section in merged:
         text = section["text"]
         if len(text) <= MAX_SECTION_CHARS:
-            truncated.append(section)
+            final.append(section)
             continue
         chunks = _hard_chunk(text, MAX_SECTION_CHARS)
         for sub_index, chunk in enumerate(chunks, start=1):
-            truncated.append(
+            final.append(
                 {
                     "title": f"{section['title']} ({sub_index})",
-                    "page_range": section["page_range"],
                     "text": chunk,
                 }
             )
-    return truncated
+    return final
 
 
 def _hard_chunk(text: str, limit: int) -> list[str]:
@@ -125,17 +106,6 @@ def _hard_chunk(text: str, limit: int) -> list[str]:
     return chunks
 
 
-def _merge_page_range(left: str, right: str) -> str:
-    left_pages = [int(x) for x in re.findall(r"\d+", left)]
-    right_pages = [int(x) for x in re.findall(r"\d+", right)]
-    pages = sorted(set(left_pages + right_pages))
-    if not pages:
-        return left
-    if len(pages) == 1:
-        return f"p.{pages[0]}"
-    return f"p.{pages[0]}-{pages[-1]}"
-
-
 def parse_pdf(pdf_path: str) -> list[dict[str, Any]]:
     """对外保留的 PDF -> sections 切分入口。"""
     markdown_text = parse_pdf_to_markdown(pdf_path)
@@ -145,11 +115,7 @@ def parse_pdf(pdf_path: str) -> list[dict[str, Any]]:
 def split_into_sections(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """兼容旧接口：直接转换为 graph 节点期望的 sections 列表。"""
     return [
-        {
-            "title": chunk.get("title", ""),
-            "page_range": chunk.get("page_range", ""),
-            "text": chunk.get("text", ""),
-        }
+        {"title": chunk.get("title", ""), "text": chunk.get("text", "")}
         for chunk in chunks
     ]
 
@@ -168,15 +134,6 @@ def load_paper_full_markdown(paper_id: str) -> str:
     return markdown_text
 
 
-def truncate_markdown(markdown_text: str, limit: int = 60000) -> str:
-    """超长 Markdown 做软截断，避免超出模型上下文。"""
-    if len(markdown_text) <= limit:
-        return markdown_text
-    head = markdown_text[: int(limit * 0.7)]
-    tail = markdown_text[-int(limit * 0.3):]
-    return f"{head}\n\n[...内容过长，已截断中部...]\n\n{tail}"
-
-
 def save_summary(paper_id: str, summary_md: str, summary_dir: str):
     paper_dir = Path(summary_dir)
     paper_dir.mkdir(parents=True, exist_ok=True)
@@ -184,10 +141,11 @@ def save_summary(paper_id: str, summary_md: str, summary_dir: str):
 
 
 def append_note(paper_id: str, qa_pair: dict, note_dir: str):
-    """旧版：把单个 Q&A 追加进笔记文件，新流程仍可使用。"""
-    paper_dir = Path(note_dir)
-    paper_dir.mkdir(parents=True, exist_ok=True)
-    note_path = paper_dir / f"{paper_id}_notes.md"
+    """旧版：把单个 Q&A 追加进全局笔记文件 note.md。"""
+    del paper_id  # 全局笔记不再按 paper_id 拆分文件，参数仅作向后兼容
+    target_dir = Path(note_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    note_path = target_dir / GLOBAL_NOTE_FILENAME
     note = (
         f"## Q: {qa_pair['question']}\n\n"
         f"**A:** {qa_pair['answer']}\n\n"
@@ -197,34 +155,27 @@ def append_note(paper_id: str, qa_pair: dict, note_dir: str):
     note_path.write_text(existing + note, encoding="utf-8")
 
 
-def append_structured_note(paper_id: str, note_markdown: str, note_dir: str | None = None) -> str:
-    """把结构化笔记（含 YAML frontmatter）追加到 data/note/<paper_id>_notes.md。"""
+def append_structured_note(note_markdown: str, note_dir: str | None = None) -> str:
+    """把结构化笔记追加到统一的 data/note/note.md。"""
     target_dir = Path(note_dir) if note_dir else NOTE_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    note_path = target_dir / f"{paper_id}_notes.md"
+    note_path = target_dir / GLOBAL_NOTE_FILENAME
     existing = note_path.read_text(encoding="utf-8") if note_path.exists() else ""
     separator = "\n\n---\n\n" if existing.strip() else ""
     note_path.write_text(existing + separator + note_markdown.strip() + "\n", encoding="utf-8")
     return str(note_path)
 
 
-def build_note_frontmatter(
-    paper_id: str,
-    paper_title: str,
-    one_line_summary: str,
-    tags: list[str],
-) -> str:
+def build_note_frontmatter(paper_title: str, one_line_summary: str) -> str:
+    """精简版 frontmatter：仅保留时间、文献名、一句话摘要。"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     safe_title = paper_title.replace('"', "'")
     safe_summary = one_line_summary.replace('"', "'").replace("\n", " ")
-    tag_block = ", ".join(f'"{tag}"' for tag in tags) if tags else ""
     return (
         "---\n"
         f"timestamp: \"{timestamp}\"\n"
-        f"paper_id: \"{paper_id}\"\n"
         f"paper_title: \"{safe_title}\"\n"
         f"one_line_summary: \"{safe_summary}\"\n"
-        f"tags: [{tag_block}]\n"
         "---\n"
     )
 
@@ -275,6 +226,10 @@ def workspace_note_dir() -> Path:
     return NOTE_DIR
 
 
+def workspace_global_note_path() -> Path:
+    return NOTE_DIR / GLOBAL_NOTE_FILENAME
+
+
 def safe_parse_pdf(pdf_path: str) -> list[dict[str, Any]]:
     try:
         pdf_file = Path(pdf_path)
@@ -293,27 +248,33 @@ def ensure_workspace_dirs() -> None:
 
 
 def ensure_paper_workspace_dirs(paper_id: str) -> tuple[Path, Path]:
+    del paper_id  # 当前全部论文共用一套目录，参数仅作向后兼容
     ensure_workspace_dirs()
     return PDF_DIR, SUMMARY_DIR
+
+
+def _global_note_exists() -> bool:
+    return (NOTE_DIR / GLOBAL_NOTE_FILENAME).is_file()
 
 
 def scan_workspace() -> list[dict[str, Any]]:
     ensure_workspace_dirs()
     resources: list[dict[str, Any]] = []
     pdf_files = sorted(PDF_DIR.glob("*.pdf"))
+    notes_present = _global_note_exists()
+    notes_path_str = str(NOTE_DIR / GLOBAL_NOTE_FILENAME) if notes_present else None
     for pdf_path in pdf_files:
         paper_id = pdf_path.stem
         summary_path = SUMMARY_DIR / f"{paper_id}.md"
-        notes_path = NOTE_DIR / f"{paper_id}_notes.md"
         resources.append(
             {
                 "paper_id": paper_id,
                 "title": pdf_path.stem,
                 "pdf_path": str(pdf_path),
                 "has_summary": summary_path.exists(),
-                "has_notes": notes_path.exists(),
+                "has_notes": notes_present,
                 "summary_path": str(summary_path) if summary_path.exists() else None,
-                "notes_path": str(notes_path) if notes_path.exists() else None,
+                "notes_path": notes_path_str,
             }
         )
     return resources
@@ -325,13 +286,13 @@ def get_workspace_document(paper_id: str) -> dict[str, Any] | None:
     if not pdf_path.is_file():
         return None
     summary_path = SUMMARY_DIR / f"{paper_id}.md"
-    notes_path = NOTE_DIR / f"{paper_id}_notes.md"
+    notes_present = _global_note_exists()
     return {
         "paper_id": paper_id,
         "title": pdf_path.stem,
         "pdf_path": str(pdf_path),
         "has_summary": summary_path.exists(),
-        "has_notes": notes_path.exists(),
+        "has_notes": notes_present,
         "summary_path": str(summary_path) if summary_path.exists() else None,
-        "notes_path": str(notes_path) if notes_path.exists() else None,
+        "notes_path": str(NOTE_DIR / GLOBAL_NOTE_FILENAME) if notes_present else None,
     }

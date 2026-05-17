@@ -227,7 +227,6 @@ interface ChatMessagesViewProps {
     mode: "summary" | "qa"
   ) => void;
   onCancel: () => void;
-  onUploadPdf: (file: File) => void;
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
 }
@@ -240,7 +239,6 @@ export function ChatMessagesView({
   onCancel,
   liveActivityEvents,
   historicalActivities,
-  onUploadPdf,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -316,7 +314,6 @@ export function ChatMessagesView({
         isLoading={isLoading}
         onCancel={onCancel}
         hasHistory={messages.length > 0}
-        onUploadPdf={onUploadPdf}
       />
     </div>
   );

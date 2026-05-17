@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 
 const API_BASE = import.meta.env.DEV ? "http://localhost:2024" : "http://localhost:8123";
 
-type ExplorerFilter = "all" | "paper" | "note";
+type ExplorerFilter = "all" | "paper" | "summary";
 
 type WorkspaceResource = {
   paper_id: string;
@@ -23,6 +23,10 @@ type WorkspaceResource = {
   notes_path?: string | null;
 };
 
+function makeMessageId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function App() {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<ProcessedEvent[]>([]);
   const [historicalActivities, setHistoricalActivities] = useState<Record<string, ProcessedEvent[]>>({});
@@ -32,6 +36,7 @@ export default function App() {
   const [paperTitle, setPaperTitle] = useState<string | null>(null);
   const [workspaceResources, setWorkspaceResources] = useState<WorkspaceResource[]>([]);
   const [summaryText, setSummaryText] = useState<string | null>(null);
+  const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [qaAnswer, setQaAnswer] = useState<string | null>(null);
   const [qaCitations, setQaCitations] = useState<string[]>([]);
   const [qaPlan, setQaPlan] = useState<QAPlan | null>(null);
@@ -141,7 +146,7 @@ export default function App() {
         scrollViewport.scrollTop = scrollViewport.scrollHeight;
       }
     }
-  }, [thread.messages]);
+  }, [chatHistory, thread.messages]);
 
   useEffect(() => {
     if (hasFinalizeEventOccurredRef.current && !thread.isLoading && thread.messages.length > 0) {
@@ -175,6 +180,7 @@ export default function App() {
         setPaperId(data.paper_id);
         setPaperTitle(file.name.replace(/\.pdf$/i, ""));
         setSummaryText(null);
+        setChatHistory([]);
         setQaAnswer(null);
         setQaCitations([]);
         setQaPlan(null);
@@ -253,11 +259,18 @@ export default function App() {
         setQaCitations([]);
         setQaPlan(null);
         setQaThreadId(null);
+        const humanMessage: Message = {
+          id: makeMessageId("human"),
+          type: "human",
+          content: question,
+        };
+        const nextHistory = [...chatHistory, humanMessage];
+        setChatHistory(nextHistory);
         const payload = {
           paper_id: paperId,
           paper_title: paperTitle,
           user_question: question,
-          qa_history_window: thread.messages.slice(-10),
+          qa_history_window: nextHistory.slice(-10),
         };
         const response = await fetch(`${API_BASE}/api/qa/plan`, {
           method: "POST",
@@ -274,7 +287,7 @@ export default function App() {
         setQaIsPlanning(false);
       }
     },
-    [paperId, paperTitle, thread.messages]
+    [paperId, paperTitle, chatHistory]
   );
 
   const handleApproveQAPlan = useCallback(
@@ -293,10 +306,22 @@ export default function App() {
         });
         if (!response.ok) throw new Error("QA resume request failed");
         const data = await response.json();
-        setQaAnswer(data.answer || "");
-        setQaCitations(Array.isArray(data.citations) ? data.citations : []);
+        const answer = data.answer || "";
+        const citations = Array.isArray(data.citations) ? data.citations : [];
+        setQaAnswer(answer);
+        setQaCitations(citations);
         setQaPlan(null);
         setQaThreadId(null);
+
+        const aiContent = citations.length
+          ? `${answer}\n\n---\n**引用：** ${citations.join("，")}`
+          : answer;
+        const aiMessage: Message = {
+          id: makeMessageId("ai"),
+          type: "ai",
+          content: aiContent,
+        };
+        setChatHistory((prev) => [...prev, aiMessage]);
       } catch (err: any) {
         setError(err.message || "QA resume request failed");
       } finally {
@@ -323,7 +348,7 @@ export default function App() {
           paper_id: paperId,
           paper_title: paperTitle,
           note_keyword: keyword,
-          qa_history_window: thread.messages.slice(-10),
+          qa_history_window: chatHistory.slice(-10),
         };
         const response = await fetch(`${API_BASE}/api/note/extract`, {
           method: "POST",
@@ -337,7 +362,7 @@ export default function App() {
         setError(err.message || "Note extract request failed");
       }
     },
-    [paperId, paperTitle, thread.messages]
+    [paperId, paperTitle, chatHistory]
   );
 
   // 轮询笔记任务状态（仅以 jobId 为依赖，避免每次 status 更新重启 timer）
@@ -403,8 +428,10 @@ export default function App() {
   const explorerResources = workspaceResources.filter((item) => {
     if (explorerFilter === "all") return true;
     if (explorerFilter === "paper") return true;
-    return item.has_notes;
+    return item.has_summary;
   });
+
+  const combinedMessages: Message[] = chatHistory;
 
   const workspace = (
     <WorkspaceLayout
@@ -413,7 +440,7 @@ export default function App() {
           papers={explorerResources.map((item) => ({
             id: item.paper_id,
             name: item.title,
-            type: item.has_notes ? ("note" as const) : ("paper" as const),
+            type: item.has_summary ? ("summary" as const) : ("paper" as const),
             status: item.has_summary ? ("done" as const) : ("empty" as const),
           }))}
           activeFilter={explorerFilter}
@@ -435,12 +462,11 @@ export default function App() {
       }
       right={
         <QnAPanel
-          messages={thread.messages}
+          messages={combinedMessages}
           isLoading={summaryLoading || qaIsPlanning || qaIsAnswering}
           scrollAreaRef={scrollAreaRef}
           onSubmit={handleQnASubmit}
           onCancel={handleCancel}
-          onUploadPdf={handleUploadPdf}
           liveActivityEvents={processedEventsTimeline}
           historicalActivities={historicalActivities}
           qaAnswer={qaAnswer}
@@ -471,7 +497,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {!hasStarted && thread.messages.length === 0 ? (
+      {!hasStarted && combinedMessages.length === 0 ? (
         <div className="h-screen overflow-hidden">{workspace}</div>
       ) : (
         workspace

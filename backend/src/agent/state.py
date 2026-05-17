@@ -27,7 +27,6 @@ class OverallState(TypedDict, total=False):
     note_dir: str
     section_title: str
     section_text: str
-    page_range: str
     section_summaries: Annotated[list, operator.add]
     final_summary: str
     user_question: str
@@ -46,7 +45,6 @@ class ParseState(TypedDict, total=False):
 class SectionState(TypedDict, total=False):
     section_title: str
     section_text: str
-    page_range: str
     paper_id: str
     summary_prompts: str
 
